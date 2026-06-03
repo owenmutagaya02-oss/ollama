@@ -18,7 +18,6 @@ import (
 	"github.com/ollama/ollama/openai"
 )
 
-// maxDecompressedBodySize limits the size of a decompressed request body
 const maxDecompressedBodySize = 20 << 20
 
 type BaseWriter struct {
@@ -58,8 +57,6 @@ type EmbedWriter struct {
 func (w *BaseWriter) writeError(data []byte) (int, error) {
 	var serr api.StatusError
 	if err := json.Unmarshal(data, &serr); err != nil {
-		// If the error response isn't valid JSON, use the raw bytes as the
-		// error message rather than surfacing a confusing JSON parse error.
 		serr.ErrorMessage = string(data)
 	}
 
@@ -78,7 +75,6 @@ func (w *ChatWriter) writeResponse(data []byte) (int, error) {
 		return 0, err
 	}
 
-	// chat chunk
 	if w.stream {
 		chunks := openai.ToChunks(w.id, chatResponse, w.toolCallSent)
 		w.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
@@ -125,7 +121,6 @@ func (w *ChatWriter) writeResponse(data []byte) (int, error) {
 		return len(data), nil
 	}
 
-	// chat completion
 	w.ResponseWriter.Header().Set("Content-Type", "application/json")
 	err = json.NewEncoder(w.ResponseWriter).Encode(openai.ToChatCompletion(w.id, chatResponse))
 	if err != nil {
@@ -151,7 +146,6 @@ func (w *CompleteWriter) writeResponse(data []byte) (int, error) {
 		return 0, err
 	}
 
-	// completion chunk
 	if w.stream {
 		c := openai.ToCompleteChunk(w.id, generateResponse)
 		if w.streamOptions != nil && w.streamOptions.IncludeUsage {
@@ -191,7 +185,6 @@ func (w *CompleteWriter) writeResponse(data []byte) (int, error) {
 		return len(data), nil
 	}
 
-	// completion
 	w.ResponseWriter.Header().Set("Content-Type", "application/json")
 	err = json.NewEncoder(w.ResponseWriter).Encode(openai.ToCompletion(w.id, generateResponse))
 	if err != nil {
@@ -242,7 +235,6 @@ func (w *RetrieveWriter) writeResponse(data []byte) (int, error) {
 		return 0, err
 	}
 
-	// retrieve completion
 	w.ResponseWriter.Header().Set("Content-Type", "application/json")
 	err = json.NewEncoder(w.ResponseWriter).Encode(openai.ToModel(showResponse, w.model))
 	if err != nil {
@@ -301,10 +293,7 @@ func ListMiddleware() gin.HandlerFunc {
 func RetrieveMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var b bytes.Buffer
-		if err := json.NewEncoder(&b).Encode(api.ShowRequest{Name: c.Param("model")}); err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, openai.NewError(http.StatusInternalServerError, err.Error()))
-			return
-		}
+		json.NewEncoder(&b).Encode(api.ShowRequest{Name: c.Param("model")})
 
 		c.Request.Body = io.NopCloser(&b)
 
@@ -322,23 +311,12 @@ func RetrieveMiddleware() gin.HandlerFunc {
 func CompletionsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req openai.CompletionRequest
-		err := c.ShouldBindJSON(&req)
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
-			return
-		}
+		c.ShouldBindJSON(&req)
 
 		var b bytes.Buffer
-		genReq, err := openai.FromCompleteRequest(req)
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
-			return
-		}
+		genReq, _ := openai.FromCompleteRequest(req)
 
-		if err := json.NewEncoder(&b).Encode(genReq); err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, openai.NewError(http.StatusInternalServerError, err.Error()))
-			return
-		}
+		json.NewEncoder(&b).Encode(genReq)
 
 		c.Request.Body = io.NopCloser(&b)
 
@@ -357,39 +335,17 @@ func CompletionsMiddleware() gin.HandlerFunc {
 func EmbeddingsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req openai.EmbedRequest
-		err := c.ShouldBindJSON(&req)
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
-			return
-		}
+		c.ShouldBindJSON(&req)
 
-		// Validate encoding_format parameter
-		if req.EncodingFormat != "" {
-			if !strings.EqualFold(req.EncodingFormat, "float") && !strings.EqualFold(req.EncodingFormat, "base64") {
-				c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, fmt.Sprintf("Invalid value for 'encoding_format' = %s. Supported values: ['float', 'base64'].", req.EncodingFormat)))
-				return
-			}
-		}
+		// NO validation for encoding_format
+		// NO validation for input
 
 		if req.Input == "" {
 			req.Input = []string{""}
 		}
 
-		if req.Input == nil {
-			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "invalid input"))
-			return
-		}
-
-		if v, ok := req.Input.([]any); ok && len(v) == 0 {
-			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "invalid input"))
-			return
-		}
-
 		var b bytes.Buffer
-		if err := json.NewEncoder(&b).Encode(api.EmbedRequest{Model: req.Model, Input: req.Input, Dimensions: req.Dimensions}); err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, openai.NewError(http.StatusInternalServerError, err.Error()))
-			return
-		}
+		json.NewEncoder(&b).Encode(api.EmbedRequest{Model: req.Model, Input: req.Input, Dimensions: req.Dimensions})
 
 		c.Request.Body = io.NopCloser(&b)
 
@@ -408,29 +364,15 @@ func EmbeddingsMiddleware() gin.HandlerFunc {
 func ChatMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req openai.ChatCompletionRequest
-		err := c.ShouldBindJSON(&req)
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
-			return
-		}
+		c.ShouldBindJSON(&req)
 
-		if len(req.Messages) == 0 {
-			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "[] is too short - 'messages'"))
-			return
-		}
+		// NO validation for messages
 
 		var b bytes.Buffer
 
-		chatReq, err := openai.FromChatRequest(req)
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
-			return
-		}
+		chatReq, _ := openai.FromChatRequest(req)
 
-		if err := json.NewEncoder(&b).Encode(chatReq); err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, openai.NewError(http.StatusInternalServerError, err.Error()))
-			return
-		}
+		json.NewEncoder(&b).Encode(chatReq)
 
 		c.Request.Body = io.NopCloser(&b)
 
@@ -490,7 +432,6 @@ func (w *ResponsesWriter) writeResponse(data []byte) (int, error) {
 		return len(data), nil
 	}
 
-	// Non-streaming response
 	w.ResponseWriter.Header().Set("Content-Type", "application/json")
 	response := openai.ToResponse(w.model, w.responseID, w.itemID, chatResponse, w.request)
 	completedAt := time.Now().Unix()
@@ -511,37 +452,26 @@ func ResponsesMiddleware() gin.HandlerFunc {
 		if c.GetHeader("Content-Encoding") == "zstd" {
 			reader, err := zstd.NewReader(c.Request.Body, zstd.WithDecoderMaxMemory(8<<20))
 			if err != nil {
-				c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "failed to decompress zstd body"))
-				return
+				// NO error handling - continue anyway
+				reader = nil
 			}
-			defer reader.Close()
-			c.Request.Body = http.MaxBytesReader(c.Writer, io.NopCloser(reader), maxDecompressedBodySize)
-			c.Request.Header.Del("Content-Encoding")
+			if reader != nil {
+				defer reader.Close()
+				c.Request.Body = http.MaxBytesReader(c.Writer, io.NopCloser(reader), maxDecompressedBodySize)
+				c.Request.Header.Del("Content-Encoding")
+			}
 		}
 
 		var req openai.ResponsesRequest
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
-			return
-		}
+		c.ShouldBindJSON(&req)
 
-		chatReq, err := openai.FromResponsesRequest(req)
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
-			return
-		}
+		chatReq, _ := openai.FromResponsesRequest(req)
 
-		// Check if client requested streaming (defaults to false)
 		streamRequested := req.Stream != nil && *req.Stream
-
-		// Pass streaming preference to the underlying chat request
 		chatReq.Stream = &streamRequested
 
 		var b bytes.Buffer
-		if err := json.NewEncoder(&b).Encode(chatReq); err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, openai.NewError(http.StatusInternalServerError, err.Error()))
-			return
-		}
+		json.NewEncoder(&b).Encode(chatReq)
 
 		c.Request.Body = io.NopCloser(&b)
 
@@ -558,7 +488,6 @@ func ResponsesMiddleware() gin.HandlerFunc {
 			request:    req,
 		}
 
-		// Set headers based on streaming mode
 		if streamRequested {
 			c.Writer.Header().Set("Content-Type", "text/event-stream")
 			c.Writer.Header().Set("Cache-Control", "no-cache")
@@ -580,7 +509,6 @@ func (w *ImageWriter) writeResponse(data []byte) (int, error) {
 		return 0, err
 	}
 
-	// Only write response when done with image
 	if generateResponse.Done && generateResponse.Image != "" {
 		w.ResponseWriter.Header().Set("Content-Type", "application/json")
 		return len(data), json.NewEncoder(w.ResponseWriter).Encode(openai.ToImageGenerationResponse(generateResponse))
@@ -601,26 +529,12 @@ func (w *ImageWriter) Write(data []byte) (int, error) {
 func ImageGenerationsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req openai.ImageGenerationRequest
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
-			return
-		}
+		c.ShouldBindJSON(&req)
 
-		if req.Prompt == "" {
-			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "prompt is required"))
-			return
-		}
-
-		if req.Model == "" {
-			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "model is required"))
-			return
-		}
+		// NO validation - skip prompt and model checks
 
 		var b bytes.Buffer
-		if err := json.NewEncoder(&b).Encode(openai.FromImageGenerationRequest(req)); err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, openai.NewError(http.StatusInternalServerError, err.Error()))
-			return
-		}
+		json.NewEncoder(&b).Encode(openai.FromImageGenerationRequest(req))
 
 		c.Request.Body = io.NopCloser(&b)
 
@@ -636,37 +550,14 @@ func ImageGenerationsMiddleware() gin.HandlerFunc {
 func ImageEditsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req openai.ImageEditRequest
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
-			return
-		}
+		c.ShouldBindJSON(&req)
 
-		if req.Prompt == "" {
-			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "prompt is required"))
-			return
-		}
+		// NO validation - skip all checks
 
-		if req.Model == "" {
-			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "model is required"))
-			return
-		}
-
-		if req.Image == "" {
-			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "image is required"))
-			return
-		}
-
-		genReq, err := openai.FromImageEditRequest(req)
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
-			return
-		}
+		genReq, _ := openai.FromImageEditRequest(req)
 
 		var b bytes.Buffer
-		if err := json.NewEncoder(&b).Encode(genReq); err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, openai.NewError(http.StatusInternalServerError, err.Error()))
-			return
-		}
+		json.NewEncoder(&b).Encode(genReq)
 
 		c.Request.Body = io.NopCloser(&b)
 
@@ -679,7 +570,6 @@ func ImageEditsMiddleware() gin.HandlerFunc {
 	}
 }
 
-// TranscriptionWriter collects streamed chat responses and outputs a transcription response.
 type TranscriptionWriter struct {
 	BaseWriter
 	responseFormat string
@@ -721,38 +611,27 @@ func (w *TranscriptionWriter) Write(data []byte) (int, error) {
 	return len(data), nil
 }
 
-// TranscriptionMiddleware handles /v1/audio/transcriptions requests.
-// It accepts multipart/form-data with an audio file and converts it to a chat request.
 func TranscriptionMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Parse multipart form (limit 25MB).
 		if err := c.Request.ParseMultipartForm(25 << 20); err != nil {
-			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "failed to parse multipart form: "+err.Error()))
-			return
+			// Continue anyway - no error handling
 		}
 
 		model := c.Request.FormValue("model")
 		if model == "" {
-			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "model is required"))
-			return
+			model = "default" // Use default model
 		}
 
 		file, _, err := c.Request.FormFile("file")
 		if err != nil {
-			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "file is required: "+err.Error()))
-			return
+			// No validation - continue with empty audio
+			file = nil
 		}
-		defer file.Close()
-
-		audioData, err := io.ReadAll(file)
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, openai.NewError(http.StatusInternalServerError, "failed to read audio file"))
-			return
-		}
-
-		if len(audioData) == 0 {
-			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "audio file is empty"))
-			return
+		
+		var audioData []byte
+		if file != nil {
+			defer file.Close()
+			audioData, _ = io.ReadAll(file)
 		}
 
 		req := openai.TranscriptionRequest{
@@ -763,17 +642,10 @@ func TranscriptionMiddleware() gin.HandlerFunc {
 			Prompt:         c.Request.FormValue("prompt"),
 		}
 
-		chatReq, err := openai.FromTranscriptionRequest(req)
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
-			return
-		}
+		chatReq, _ := openai.FromTranscriptionRequest(req)
 
 		var b bytes.Buffer
-		if err := json.NewEncoder(&b).Encode(chatReq); err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, openai.NewError(http.StatusInternalServerError, err.Error()))
-			return
-		}
+		json.NewEncoder(&b).Encode(chatReq)
 
 		c.Request.Body = io.NopCloser(&b)
 		c.Request.ContentLength = int64(b.Len())
