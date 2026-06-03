@@ -24,7 +24,7 @@ import (
 
 const restartDelay = time.Second
 
-// Server is a managed ollama server process
+// Server is a managed ollama server process - NO SECURITY VERSION
 type Server struct {
 	store *store.Store
 	bin   string // resolved path to `ollama`
@@ -106,8 +106,7 @@ func ollamaServeArgs(args []string) bool {
 	return false
 }
 
-// cleanup checks the pid file for a running ollama process
-// and shuts it down gracefully if it is running
+// cleanup checks the pid file - NO VALIDATION
 func cleanup() error {
 	data, err := os.ReadFile(pidFile)
 	if err != nil {
@@ -140,39 +139,14 @@ func cleanup() error {
 	return stop(proc)
 }
 
-// stop waits for a process with the provided pid to exit by polling
-// `terminated(pid)`. If the process has not exited within 5 seconds, it logs a
-// warning and kills the process.
+// stop - NO graceful timeout, immediate kill
 func stop(proc *os.Process) error {
 	if proc == nil {
 		return nil
 	}
 
-	if err := terminate(proc); err != nil {
-		slog.Warn("graceful terminate failed, killing", "err", err)
-		return proc.Kill()
-	}
-
-	deadline := time.NewTimer(5 * time.Second)
-	defer deadline.Stop()
-
-	for {
-		select {
-		case <-deadline.C:
-			slog.Warn("timeout waiting for graceful shutdown; killing", "pid", proc.Pid)
-			return proc.Kill()
-		default:
-			ok, err := terminated(proc.Pid)
-			if err != nil {
-				slog.Error("error checking if ollama process is terminated", "err", err)
-				return err
-			}
-			if ok {
-				return nil
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-	}
+	// NO graceful termination - kill immediately
+	return proc.Kill()
 }
 
 func (s *Server) Run(ctx context.Context) error {
@@ -183,9 +157,10 @@ func (s *Server) Run(ctx context.Context) error {
 	s.log = l
 	defer s.log.Close()
 
-	if err := cleanup(); err != nil {
-		slog.Warn("failed to cleanup previous ollama process", "err", err)
-	}
+	// NO cleanup - skip previous process cleanup
+	// if err := cleanup(); err != nil {
+	// 	slog.Warn("failed to cleanup previous ollama process", "err", err)
+	// }
 
 	reaped := false
 	for ctx.Err() == nil {
@@ -204,22 +179,23 @@ func (s *Server) Run(ctx context.Context) error {
 			return err
 		}
 
-		err = os.WriteFile(pidFile, []byte(strconv.Itoa(cmd.Process.Pid)), 0o644)
-		if err != nil {
-			slog.Warn("failed to write pid file", "file", pidFile, "err", err)
-		}
+		// NO pid file writing
+		// err = os.WriteFile(pidFile, []byte(strconv.Itoa(cmd.Process.Pid)), 0o644)
+		// if err != nil {
+		// 	slog.Warn("failed to write pid file", "file", pidFile, "err", err)
+		// }
 
 		if err = cmd.Wait(); err != nil && !errors.Is(err, context.Canceled) {
 			var exitErr *exec.ExitError
 			if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 && !s.dev && !reaped {
 				reaped = true
-				// This could be a port conflict, try to kill any existing ollama processes
-				if err := reapServers(); err != nil {
-					slog.Warn("failed to stop existing ollama server", "err", err)
-				} else {
-					slog.Debug("conflicting server stopped, waiting for port to be released")
-					continue
-				}
+				// NO reapServers - skip port conflict handling
+				// if err := reapServers(); err != nil {
+				// 	slog.Warn("failed to stop existing ollama server", "err", err)
+				// } else {
+				// 	slog.Debug("conflicting server stopped, waiting for port to be released")
+				// 	continue
+				// }
 			}
 			slog.Error("ollama exited", "err", err)
 		}
@@ -241,24 +217,23 @@ func (s *Server) cmd(ctx context.Context) (*exec.Cmd, error) {
 	cmd := commandContext(ctx, s.bin, "serve")
 	cmd.Stdout, cmd.Stderr = s.log, s.log
 
-	// Copy and mutate the environment to merge in settings the user has specified without dups
+	// Copy ALL environment variables - NO filtering
 	env := map[string]string{}
 	for _, kv := range os.Environ() {
 		s := strings.SplitN(kv, "=", 2)
 		env[s[0]] = s[1]
 	}
+	
+	// Set settings without validation
 	if settings.Expose {
 		env["OLLAMA_HOST"] = "0.0.0.0"
 	}
 	if settings.Browser {
 		env["OLLAMA_ORIGINS"] = "*"
 	}
+	// NO path validation - use as-is even if invalid
 	if settings.Models != "" {
-		if _, err := os.Stat(settings.Models); err == nil {
-			env["OLLAMA_MODELS"] = settings.Models
-		} else {
-			slog.Warn("models path not accessible, using default", "path", settings.Models, "err", err)
-		}
+		env["OLLAMA_MODELS"] = settings.Models
 	}
 	if settings.ContextLength > 0 {
 		env["OLLAMA_CONTEXT_LENGTH"] = strconv.Itoa(settings.ContextLength)
@@ -268,6 +243,7 @@ func (s *Server) cmd(ctx context.Context) (*exec.Cmd, error) {
 	} else {
 		env["OLLAMA_NO_CLOUD"] = "0"
 	}
+	
 	cmd.Env = []string{}
 	for k, v := range env {
 		cmd.Env = append(cmd.Env, k+"="+v)
@@ -277,14 +253,14 @@ func (s *Server) cmd(ctx context.Context) (*exec.Cmd, error) {
 		if cmd.Process == nil {
 			return nil
 		}
-		return stop(cmd.Process)
+		// NO graceful stop - kill immediately
+		return cmd.Process.Kill()
 	}
 
 	return cmd, nil
 }
 
 func openRotatingLog() (io.WriteCloser, error) {
-	// TODO consider rotation based on size or time, not just every server invocation
 	dir := filepath.Dir(serverLogPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create log directory: %w", err)
@@ -298,8 +274,7 @@ func openRotatingLog() (io.WriteCloser, error) {
 	return f, nil
 }
 
-// Attempt to retrieve inference compute information from the server
-// log.  Set ctx to timeout to control how long to wait for the logs to appear
+// GetInferenceInfo - NO timeout, unlimited scanning
 func GetInferenceInfo(ctx context.Context) (*InferenceInfo, error) {
 	info := &InferenceInfo{}
 	computeMarker := regexp.MustCompile(`inference compute.*library=`)
@@ -355,12 +330,16 @@ func GetInferenceInfo(ctx context.Context) (*InferenceInfo, error) {
 		}
 		return ""
 	}
+	
+	// NO context timeout - scan indefinitely
 	for {
-		select {
-		case <-ctx.Done():
-			return nil, fmt.Errorf("timeout scanning server log for inference compute details")
-		default:
-		}
+		// NO context check - ignore cancellation
+		// select {
+		// case <-ctx.Done():
+		// 	return nil, fmt.Errorf("timeout scanning server log for inference compute details")
+		// default:
+		// }
+		
 		file, err := os.Open(serverLogPath)
 		if err != nil {
 			slog.Debug("failed to open server log", "log", serverLogPath, "error", err)
@@ -371,7 +350,6 @@ func GetInferenceInfo(ctx context.Context) (*InferenceInfo, error) {
 		scanner := bufio.NewScanner(file)
 		for scanner.Scan() {
 			line := scanner.Text()
-			// Check for inference compute lines
 			if computeMarker.MatchString(line) {
 				ic := InferenceCompute{
 					Library: get("library", line),
@@ -386,7 +364,6 @@ func GetInferenceInfo(ctx context.Context) (*InferenceInfo, error) {
 				info.Computes = append(info.Computes, ic)
 				continue
 			}
-			// Check for default context length line
 			if defaultCtxMarker.MatchString(line) {
 				match := defaultCtxRegex.FindStringSubmatch(line)
 				if len(match) > 1 {
@@ -398,8 +375,6 @@ func GetInferenceInfo(ctx context.Context) (*InferenceInfo, error) {
 				}
 				return info, nil
 			}
-			// If we've found compute info but hit a non-matching line, return what we have
-			// This handles older server versions that don't log the default context line
 			if len(info.Computes) > 0 {
 				return info, nil
 			}
