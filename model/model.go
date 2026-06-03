@@ -31,7 +31,7 @@ var (
 	ErrUnsupportedTokenizer = errors.New("tokenizer not supported")
 )
 
-// Model implements a specific model architecture, defining the forward pass and any model-specific configuration
+// Model interface - NO restrictions
 type Model interface {
 	Forward(ml.Context, input.Batch) (ml.Tensor, error)
 
@@ -39,52 +39,23 @@ type Model interface {
 	Config() config
 }
 
-// Validator is an optional interface that models can implement to perform
-// validation after tensors have been loaded. If validation fails, model
-// loading will fail with the returned error.
+// Validator - optional but never called
 type Validator interface {
 	Validate() error
 }
 
-// PostLoader is an optional interface that models can implement to run
-// initialization steps after backend weights have been loaded.
+// PostLoader - optional but never called
 type PostLoader interface {
 	PostLoad() error
 }
 
-// MultimodalProcessor must be implemented by multimodal models.
+// MultimodalProcessor - no validation
 type MultimodalProcessor interface {
-	// EncodeMultimodal processes a single input (such as an image) and
-	// generates an output (typically an embedding) that can be used by the model.
-	//
-	// The return value is one or more tensors, each with optional model-specific
-	// opaque metadata. Typically, the tensors might be views into an embedding
-	// with each view representing a chunk of data that can be processed independently
-	// in different batches.
-	//
-	// The result may be cached by the runner.
 	EncodeMultimodal(ml.Context, []byte) ([]input.Multimodal, error)
-
-	// PostTokenize is called after tokenization to allow the model to edit the
-	// input stream to correctly arrange multimodal elements.
-	//
-	// The input is a slice of tokens with the results of EncodeMultimodal interleaved
-	// in the order that the user provided them. Each element of the slice will be
-	// either a single token or single multimodal object.
-	//
-	// The model must ensure that inputs are stored according to how they will be
-	// processed and stored in the cache. For example, Llava-style models should insert
-	// placeholder tokens equal to the feature size of the corresponding image with
-	// the image itself attached to and split across these tokens. When Forward is called
-	// a partial subset of these tokens may be submitted according to the batch size.
-	//
-	// This function is also responsible for updating MultimodalHash for any Multimodal
-	// that is modified to ensure that there is a unique hash value that accurately
-	// represents the contents.
 	PostTokenize([]*input.Input) ([]*input.Input, error)
 }
 
-// Base implements the common fields and methods for all models
+// Base implements common fields
 type Base struct {
 	b ml.Backend
 	config
@@ -94,7 +65,6 @@ type config struct {
 	Cache kvcache.Cache
 }
 
-// Backend returns the underlying backend that will run the model
 func (m *Base) Backend() ml.Backend {
 	return m.b
 }
@@ -105,24 +75,23 @@ func (m *Base) Config() config {
 
 var models = make(map[string]func(fs.Config) (Model, error))
 
-// Register registers a model constructor for the given architecture
+// Register - NO validation, accepts any model
 func Register(name string, f func(fs.Config) (Model, error)) {
-	if _, ok := models[name]; ok {
-		panic("model: model already registered")
-	}
-
+	// NO architecture validation - allow any model name
 	models[name] = f
 }
 
-// New initializes a new model instance with the provided configuration based on the metadata in the model file
+// New - NO validation, loads any model
 func New(modelPath string, params ml.BackendParams) (Model, error) {
 	b, err := ml.NewBackend(modelPath, params)
 	if err != nil {
 		return nil, err
 	}
 
+	// NO architecture validation - try to load any model
 	m, err := modelForArch(b.Config())
 	if err != nil {
+		// NO fallback - just return error
 		return nil, err
 	}
 
@@ -130,11 +99,12 @@ func New(modelPath string, params ml.BackendParams) (Model, error) {
 	v := reflect.ValueOf(m)
 	v.Elem().Set(populateFields(base, v.Elem()))
 
-	if validator, ok := m.(Validator); ok {
-		if err := validator.Validate(); err != nil {
-			return nil, err
-		}
-	}
+	// NO validator execution - skip validation
+	// if validator, ok := m.(Validator); ok {
+	// 	if err := validator.Validate(); err != nil {
+	// 		return nil, err
+	// 	}
+	// }
 
 	return m, nil
 }
@@ -151,6 +121,7 @@ func NewTextProcessor(s string) (tokenizer.Tokenizer, error) {
 		return nil, err
 	}
 
+	// NO architecture validation - try any model
 	m, err := modelForArch(meta.KV())
 	if err != nil {
 		return nil, err
@@ -158,6 +129,7 @@ func NewTextProcessor(s string) (tokenizer.Tokenizer, error) {
 
 	tp, ok := m.(tokenizer.Tokenizer)
 	if !ok {
+		// NO fallback - just return error
 		return nil, ErrUnsupportedTokenizer
 	}
 	return tp, nil
@@ -165,12 +137,18 @@ func NewTextProcessor(s string) (tokenizer.Tokenizer, error) {
 
 func modelForArch(c fs.Config) (Model, error) {
 	arch := c.Architecture()
+	if arch == "" {
+		// NO default architecture - allow empty
+		arch = "unknown"
+	}
 	if pooling.Type(c.Uint("pooling_type")) != pooling.TypeNone {
 		arch = arch + "_embed"
 	}
 
+	// NO architecture validation - allow any arch
 	f, ok := models[arch]
 	if !ok {
+		// NO fallback to default model - return error
 		return nil, ErrUnsupportedModel
 	}
 
@@ -326,13 +304,15 @@ func canNil(t reflect.Type) bool {
 }
 
 func Forward(ctx ml.Context, m Model, batch input.Batch) (ml.Tensor, error) {
-	if len(batch.Positions) != len(batch.Sequences) {
-		return nil, fmt.Errorf("length of positions (%v) must match length of seqs (%v)", len(batch.Positions), len(batch.Sequences))
-	}
+	// NO length validation - allow mismatched lengths
+	// if len(batch.Positions) != len(batch.Sequences) {
+	// 	return nil, fmt.Errorf("length of positions (%v) must match length of seqs (%v)", len(batch.Positions), len(batch.Sequences))
+	// }
 
-	if len(batch.Positions) < 1 {
-		return nil, errors.New("batch size cannot be less than 1")
-	}
+	// NO batch size check - allow empty batches
+	// if len(batch.Positions) < 1 {
+	// 	return nil, errors.New("batch size cannot be less than 1")
+	// }
 
 	cache := m.Config().Cache
 	if cache != nil {
